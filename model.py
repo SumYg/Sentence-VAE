@@ -51,30 +51,7 @@ class SentenceVAE(nn.Module):
 
     def forward(self, input_sequence, length):
 
-        batch_size = input_sequence.size(0)
-        sorted_lengths, sorted_idx = torch.sort(length, descending=True)
-        input_sequence = input_sequence[sorted_idx]
-
-        # ENCODER
-        input_embedding = self.embedding(input_sequence)
-
-        packed_input = rnn_utils.pack_padded_sequence(input_embedding, sorted_lengths.data.tolist(), batch_first=True)
-
-        _, hidden = self.encoder_rnn(packed_input)
-
-        if self.bidirectional or self.num_layers > 1:
-            # flatten hidden state
-            hidden = hidden.view(batch_size, self.hidden_size*self.hidden_factor)
-        else:
-            hidden = hidden.squeeze()
-
-        # REPARAMETERIZATION
-        mean = self.hidden2mean(hidden)
-        logv = self.hidden2logv(hidden)
-        std = torch.exp(0.5 * logv)
-
-        z = to_var(torch.randn([batch_size, self.latent_size]))
-        z = z * std + mean
+        batch_size, sorted_idx, mean, logv, z, reversed_idx = self.get_representation(input_sequence, length)
 
         # DECODER
         hidden = self.latent2hidden(z)
@@ -104,7 +81,6 @@ class SentenceVAE(nn.Module):
         # process outputs
         padded_outputs = rnn_utils.pad_packed_sequence(outputs, batch_first=True)[0]
         padded_outputs = padded_outputs.contiguous()
-        _,reversed_idx = torch.sort(sorted_idx)
         padded_outputs = padded_outputs[reversed_idx]
         b,s,_ = padded_outputs.size()
 
@@ -113,6 +89,36 @@ class SentenceVAE(nn.Module):
         logp = logp.view(b, s, self.embedding.num_embeddings)
 
         return logp, mean, logv, z
+
+    def get_representation(self, input_sequence, length):
+        
+        batch_size = input_sequence.size(0)
+        sorted_lengths, sorted_idx = torch.sort(length, descending=True)
+        input_sequence = input_sequence[sorted_idx]
+
+        # ENCODER
+        input_embedding = self.embedding(input_sequence)
+
+        packed_input = rnn_utils.pack_padded_sequence(input_embedding, sorted_lengths.data.tolist(), batch_first=True)
+
+        _, hidden = self.encoder_rnn(packed_input)
+
+        if self.bidirectional or self.num_layers > 1:
+            # flatten hidden state
+            hidden = hidden.view(batch_size, self.hidden_size*self.hidden_factor)
+        else:
+            hidden = hidden.squeeze()
+
+        # REPARAMETERIZATION
+        mean = self.hidden2mean(hidden)
+        logv = self.hidden2logv(hidden)
+        std = torch.exp(0.5 * logv)
+
+        z = to_var(torch.randn([batch_size, self.latent_size]))
+        z = z * std + mean
+        _,reversed_idx = torch.sort(sorted_idx)
+
+        return batch_size, sorted_idx, mean, logv, z, reversed_idx
 
     def inference(self, n=4, z=None):
 
