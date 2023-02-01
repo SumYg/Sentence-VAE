@@ -75,25 +75,79 @@ class SentenceVAE(nn.Module):
         batch_size, sorted_idx, mean, logv, z, reversed_idx, input_embedding, sorted_lengths = self.get_representation(input_sequence, length)
 
         # DECODER
-        # hidden = self.latent2hidden(z)
+        if True:
 
-        generations, z, padded_outputs = self.inference(z=z)
-        
+            generations, z, padded_outputs = self.inference(z=z)
         # print(padded_outputs)
         # print(padded_outputs.shape, generations.shape)
         
         # padded_outputs = generations
         # padded_outputs = padded_outputs.contiguous()
         # print(padded_outputs.size())
+        
+        # if not teacher forcing
+                # padded_outputs = padded_outputs[reversed_idx]
+                # b,s, _ = padded_outputs.size()
+                # # print(padded_outputs.view(-1, padded_outputs.size(2)))
+                # # project outputs to vocab
+                # logp = nn.functional.log_softmax(self.outputs2vocab(padded_outputs.view(-1, padded_outputs.size(2))), dim=-1)
+                # # print(logp.shape)
+                # logp = logp.view(b, s, self.embedding.num_embeddings)
+                # # print(logp.shape)
+                # return logp, mean, logv, z
+        
+        else:
+            hidden = self.latent2hidden(z)
+        
+            if self.num_layers > 1:
+                # unflatten hidden state
+                if self.rnn_type == 'lstm':
+                    hidden = hidden.view(self.decoder_hidden_factor, batch_size, self.hidden_size), self.latent2c(z).view(self.decoder_hidden_factor, batch_size, self.hidden_size)
+                else:
+                    hidden = hidden.view(self.decoder_hidden_factor, batch_size, self.hidden_size)
+            else:
+                if self.rnn_type == 'lstm':
+                    hidden = (hidden.unsqueeze(0), self.latent2c(z).unsqueeze(0))
+                else:
+                    hidden = hidden.unsqueeze(0)
+            # decoder input
+            if self.word_dropout_rate > 0:
+                # randomly replace decoder input with <unk>
+                prob = torch.rand(input_sequence.size())
+                if torch.cuda.is_available():
+                    prob=prob.cuda()
+                prob[(input_sequence.data - self.sos_idx) * (input_sequence.data - self.pad_idx) == 0] = 1
+                decoder_input_sequence = input_sequence.clone()
+                decoder_input_sequence[prob < self.word_dropout_rate] = self.unk_idx
+                input_embedding = self.embedding(decoder_input_sequence)
+            input_embedding = self.embedding_dropout(input_embedding)
+            packed_input = rnn_utils.pack_padded_sequence(input_embedding, sorted_lengths.data.tolist(), batch_first=True)
+
+            # decoder forward pass
+            outputs, _ = self.decoder_rnn(packed_input, hidden)
+
+            # process outputs
+            padded_outputs = rnn_utils.pad_packed_sequence(outputs, batch_first=True)[0]
+            
+        padded_outputs = padded_outputs.contiguous()
+        # print(padded_outputs.shape)
+        # print(padded_outputs)
+        # 0/0
+        # _,reversed_idx = torch.sort(sorted_idx)
         padded_outputs = padded_outputs[reversed_idx]
-        b,s, _ = padded_outputs.size()
-        # print(padded_outputs.view(-1, padded_outputs.size(2)))
+        b,s,_ = padded_outputs.size()
+
         # project outputs to vocab
         logp = nn.functional.log_softmax(self.outputs2vocab(padded_outputs.view(-1, padded_outputs.size(2))), dim=-1)
-        # print(logp.shape)
         logp = logp.view(b, s, self.embedding.num_embeddings)
-        # print(logp.shape)
+
         return logp, mean, logv, z
+        
+        
+        
+        
+        
+        hidden = self.latent2hidden(z)
         
         if self.num_layers > 1:
             # unflatten hidden state
@@ -136,6 +190,7 @@ class SentenceVAE(nn.Module):
         sequence_running = torch.arange(0, batch_size, out=self.tensor()).long()
         sequence_mask = torch.ones(batch_size, out=self.tensor()).bool()
         
+        # generations = self.tensor(batch_size, self.max_sequence_length).fill_(self.pad_idx).long()
         
         outputs = self.tensor(batch_size, self.max_sequence_length).fill_(self.pad_idx)
         for i in range(self.max_sequence_length):
@@ -145,7 +200,8 @@ class SentenceVAE(nn.Module):
             
             
             # save next input
-            outputs = self._save_sample(generations, input_sequence, sequence_running, t)
+            outputs = self._save_sample(outputs, input_sequence, sequence_running, t)
+            padded_outputs = self._save_sample(padded_outputs, output, sequence_running, t)
 
             # update gloabl running sequence
             sequence_mask[sequence_running] = (input_sequence != self.eos_idx)
@@ -167,7 +223,9 @@ class SentenceVAE(nn.Module):
 
                 running_seqs = torch.arange(0, len(running_seqs), out=self.tensor()).long()
                 
-            exit()
+            # exit()
+        
+        
         
         # print("Outputs")
         # print(outputs)

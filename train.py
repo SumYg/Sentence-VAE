@@ -74,10 +74,16 @@ def main(args):
     def loss_fn(logp, target, length, mean, logv, anneal_function, step, k, x0):
 
         # cut-off unnecessary padding from target, and flatten
+        # t_target = target[:, :torch.max(length).item()].contiguous().view(-1)
+        # print(logp.shape, target.shape, torch.max(length).item())
         target = target[:, :torch.max(length).item()].contiguous().view(-1)
-        logp = logp.view(-1, logp.size(2))
+        # target = target.view(-1)
+        # logp = logp.view(-1, logp.size(2))
+        logp = logp[:, :torch.max(length).item()].contiguous().view(-1, logp.size(2))
 
         # Negative Log Likelihood
+        # print(logp.shape, target.shape)
+        # 0/0
         NLL_loss = NLL(logp, target)
 
         # KL Divergence
@@ -122,6 +128,7 @@ def main(args):
                 logp, mean, logv, z = model(batch['input'], batch['length'])
 
                 # loss calculation
+                # print(logp.shape, batch['target'].shape, batch['length'])
                 NLL_loss, KL_loss, KL_weight = loss_fn(logp, batch['target'],
                     batch['length'], mean, logv, args.anneal_function, step, args.k, args.x0)
 
