@@ -10,6 +10,7 @@ from transformers import BertTokenizer
 from utils import OrderedCounter
 
 from common.file_handler import save2pickle, load_pickle
+from joblib import load as job_load
 
 MAX_TOKEN_LEN = 100 + 1
 
@@ -103,7 +104,7 @@ class InputDataset(Dataset):
 
 
     def _load_data(self):
-        self.data = load_pickle(self.data_file)
+        self.data = job_load(self.data_file)
         # if vocab:
         #     with open(os.path.join(self.data_dir, self.vocab_file), 'r') as file:
         #         vocab = json.load(file)
@@ -115,32 +116,30 @@ class InputDataset(Dataset):
 
 #         self.w2i, self.i2w = vocab['w2i'], vocab['i2w']
         
-    
+    def _tokenize_sentence(self, sentence):
+        "Make sure sentence is truncated before input to this func"
+        encoded_sent = self.tokenizer.tokenize(sentence)
+        words = encoded_sent['input_ids'][0]
+        input_seq = words[:-1]
+        target = words[1:]
+        length = (encoded_sent['attention_mask'] == 1).sum().item() - 1
+        return input_seq, target, length
 
-    def _create_data(self):
 
-        # if self.split == 'train':
-        #     self._create_vocab()
-        # else:
-        #     self._load_vocab()
-
-        # tokenizer = TweetTokenizer(preserve_case=False)
-        
-
+    def _construct_data(self, file):
         data = defaultdict(dict)
         
-        file = load_pickle(self.raw_data_path)
         for i, line in enumerate(file):
             if len(line) <= 0:
                 continue
             assert len(line) > 0
 
-            encoded_sent = self.tokenizer.tokenize(line)
+            # encoded_sent = self.tokenizer.tokenize(line)
             
-            words = encoded_sent['input_ids'][0]
+            # words = encoded_sent['input_ids'][0]
             
-            input_seq = words[:-1]
-            target = words[1:]
+            # input_seq = words[:-1]
+            # target = words[1:]
 
 
 #                 input = ['<sos>'] + words
@@ -150,7 +149,8 @@ class InputDataset(Dataset):
 #                 target = target + ['<eos>']
 
             # assert len(input) == len(target), "%i, %i"%(len(input), len(target))
-            length = (encoded_sent['attention_mask'] == 1).sum().item() - 1
+            # length = (encoded_sent['attention_mask'] == 1).sum().item() - 1
+            input_seq, target, length = self._tokenize_sentence(line[:self.max_sequence_length - 1])  # -1 for <eos>/<sos>
 
             # input.extend(['<pad>'] * (self.max_sequence_length-length))
             # target.extend(['<pad>'] * (self.max_sequence_length-length))
@@ -162,9 +162,19 @@ class InputDataset(Dataset):
             data[data_id]['input'] = input_seq
             data[data_id]['target'] = target
             data[data_id]['length'] = length
+        return data
 
+    def _create_data(self):
+
+        # if self.split == 'train':
+        #     self._create_vocab()
+        # else:
+        #     self._load_vocab()
+
+        # tokenizer = TweetTokenizer(preserve_case=False)
+        file = job_load(self.raw_data_path)
         
-        save2pickle(data, self.data_file)
+        save2pickle(self._construct_data(file), self.data_file)
         # with io.open(os.path.join(self.data_dir, self.data_file), 'wb') as data_file:
         #     data = json.dumps(data, ensure_ascii=False)
         #     data_file.write(data.encode('utf8', 'replace'))

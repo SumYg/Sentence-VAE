@@ -167,3 +167,10 @@ class PTB(Dataset):
             vocab_file.write(data.encode('utf8', 'replace'))
 
         self._load_vocab()
+        
+        
+
+if __name__ == '__main__':
+    ptb = PTB('data', 'self', False)
+
+    

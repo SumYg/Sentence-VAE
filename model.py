@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.nn.utils.rnn as rnn_utils
 from utils import to_var
 
 from transformers import BertModel, GPT2Model
+
 
 class TransformerVAE(nn.Module):
     def __init__(self, bert_model, gpt2_model, latent_dim):
@@ -155,6 +157,8 @@ class VAEDecoder(nn.Module):
 
         self.decoder_rnn = rnn(embedding_size, hidden_size, num_layers=num_layers,
                                batch_first=True)
+
+        self.decoder_rnn.flatten_parameters()
         
         self.outputs2vocab = nn.Sequential(
 		nn.Linear(hidden_size, hidden_size),
@@ -267,13 +271,20 @@ class VAEDecoder(nn.Module):
 
         ###########
             
-        padded_outputs = padded_outputs.contiguous()
         # print(padded_outputs.shape)
         # print(padded_outputs)
         # 0/0
         # _,reversed_idx = torch.sort(sorted_idx)
         padded_outputs = padded_outputs[reversed_idx]
+        # print(padded_outputs.shape)
+        # pad the padded_outputs to max_sequence_length in the second dimension
+        padded_outputs = F.pad(padded_outputs, (0, 0, 0, self.max_sequence_length - padded_outputs.size(1)), 'constant', self.pad_idx)
+
+        padded_outputs = padded_outputs.contiguous()
+
         b,s,_ = padded_outputs.size()
+        # print(b,s,_)
+        # 0/0
 
         return self.outputs2vocab(padded_outputs.view(-1, padded_outputs.size(2))), b, s
 
@@ -470,6 +481,7 @@ class VAEEncoder(nn.Module):
         self.encoder_rnn = rnn(embedding_size, hidden_size, num_layers=num_layers, bidirectional=self.bidirectional,
                                batch_first=True)
 
+        self.encoder_rnn.flatten_parameters()
 
         self.hidden2mean_logv = nn.Sequential(
                 nn.Linear(hidden_size * self.hidden_factor, hidden_size * self.hidden_factor),
@@ -511,5 +523,8 @@ class VAEEncoder(nn.Module):
         z = z * std + mean
         _, reversed_idx = torch.sort(sorted_idx)
 
-        return batch_size, sorted_idx, mean, logv, z, reversed_idx, sorted_lengths
+        # for i in batch_size, sorted_idx, mean, logv, z, reversed_idx, sorted_lengths:
+        #     print(i.shape)
+
+        return sorted_idx, mean, logv, z, reversed_idx, sorted_lengths
 
