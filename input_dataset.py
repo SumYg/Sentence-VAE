@@ -18,6 +18,9 @@ class Tokenizer:
     def __init__(self):
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
+    def __call__(self, text):
+        return self.tokenize(text)
+
     def tokenize(self, text):
         return self.tokenizer.encode_plus(
             text=text,  # Preprocess sentence
@@ -35,32 +38,74 @@ class Tokenizer:
     def convert_tokens_to_string(self, tokens):
         return self.tokenizer.convert_tokens_to_string(tokens)
 
+class VAETokenizer(Tokenizer):
+    def __call__(self, text, **kwargs):
+        # discard the kwargs
+
+        # single input
+        if isinstance(text, str):
+            encoded_sent = self.tokenize(text)
+            words = encoded_sent['input_ids']
+            input_seq = words[:, :-1]
+            length = (encoded_sent['attention_mask'] == 1).sum(axis=-1) - 1
+            return {
+                'input': input_seq
+                , 'length': length
+            }
+
+        # batch input
+        input_seqs, lengths = self.batch_tokenize(text)
+
+        return {
+            'input': input_seqs
+            , 'length': lengths
+        }
+    def batch_tokenize(self, batch_text):
+        encoded_sents = self.tokenizer.batch_encode_plus(
+            batch_text,
+            add_special_tokens=True,
+            max_length=MAX_TOKEN_LEN,
+            truncation=True,
+            padding='max_length',
+            return_tensors='pt',
+            return_attention_mask=True
+        )
+        input_seqs = encoded_sents['input_ids'][:,:-1]
+        lengths = (encoded_sents['attention_mask'] == 1).sum(dim=1) - 1
+        
+        return input_seqs, lengths
+
 class InputDataset(Dataset):
 
-    def __init__(self, data_dir, raw_data_filename, split, create_data, **kwargs):
+    def __init__(self, data_dir=None, raw_data_filename=None, split=None, create_data=None, online=False, **kwargs):
 
         super().__init__()
-        self.data_dir = data_dir
-        self.split = split
-        self.max_sequence_length = kwargs.get('max_sequence_length', 50)
-        self.min_occ = kwargs.get('min_occ', 3)
-
-        self.raw_data_path = os.path.join(data_dir, f"{raw_data_filename}.{split}.pickle")
-        self.data_file = os.path.join(data_dir, 'processed_'+f"{raw_data_filename}.{split}.pickle")
-        # self.vocab_file = 'ptb.vocab.json'
-        
-        self.tokenizer = Tokenizer()
-
-        if create_data:
-            print("Creating new %s ptb data."%split.upper())
-            self._create_data()
-
-        elif not os.path.exists(self.data_file):
-            print("%s preprocessed file not found at %s. Creating new."%(split.upper(), os.path.join(self.data_dir, self.data_file)))
-            self._create_data()
+        if online:
+            self.max_sequence_length = kwargs.get('max_sequence_length', 50)
+            self.tokenizer = Tokenizer()
 
         else:
-            self._load_data()
+            self.data_dir = data_dir
+            self.split = split
+            self.max_sequence_length = kwargs.get('max_sequence_length', 50)
+            # self.min_occ = kwargs.get('min_occ', 3)
+
+            self.raw_data_path = os.path.join(data_dir, f"{raw_data_filename}.{split}.pickle")
+            self.data_file = os.path.join(data_dir, 'processed_'+f"{raw_data_filename}.{split}.pickle")
+            # self.vocab_file = 'ptb.vocab.json'
+            
+            self.tokenizer = Tokenizer()
+
+            if create_data:
+                print("Creating new %s ptb data."%split.upper())
+                self._create_data()
+
+            elif not os.path.exists(self.data_file):
+                print("%s preprocessed file not found at %s. Creating new."%(split.upper(), os.path.join(self.data_dir, self.data_file)))
+                self._create_data()
+
+            else:
+                self._load_data()
 
 
     def __len__(self):
