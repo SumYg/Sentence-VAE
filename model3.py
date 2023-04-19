@@ -3,21 +3,94 @@ import torch.nn as nn
 import torch.nn.utils.rnn as rnn_utils
 from utils import to_var
 
-from transformers import BertModel, GPT2Model
+from transformers import AutoModel, AutoTokenizer
 
-def get_bert_embedding(pretrained_name):
-    bert = BertModel.from_pretrained(pretrained_name)
-    # print(bert)
-    bert.eval()
-    bert.requires_grad = False
-    return bert.config.hidden_size, nn.Embedding.from_pretrained(bert.embeddings.word_embeddings.weight, freeze=True)
+# def get_tokenizer(pretrained_name="princeton-nlp/sup-simcse-bert-base-uncased"):
+#     tokenizer = AutoTokenizer.from_pretrained(pretrained_name)
+#     return tokenizer
+
+class VAEEncoder(nn.Module):
+    def __init__(self, vocab_size, embedding_size, rnn_type, hidden_size, word_dropout, embedding_dropout, latent_size,
+                sos_idx, eos_idx, pad_idx, unk_idx, max_sequence_length, num_layers=1, bidirectional=False):
+
+        super().__init__()
+        self.tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.Tensor
+
+        self.max_sequence_length = max_sequence_length
+        self.sos_idx = sos_idx
+        self.eos_idx = eos_idx
+        self.pad_idx = pad_idx
+        self.unk_idx = unk_idx
+
+        self.latent_size = latent_size
+
+        self.rnn_type = rnn_type
+        self.bidirectional = bidirectional
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+        
+        # self.bert = BertModel.from_pretrained('bert-base-uncased')
+        # self.bert.eval()
+        # embedding_size = self.bert.config.hidden_size
+        # self.bert.requires_grad = False
+        self.word_dropout_rate = word_dropout
+        # self.embedding_dropout = nn.Dropout(p=embedding_dropout)
+
+        self.hidden_factor = (2 if bidirectional else 1) * num_layers
+        self.decoder_hidden_factor = num_layers
+        
+
+        # self.encoder_rnn = rnn(embedding_size, hidden_size, num_layers=num_layers, bidirectional=self.bidirectional,
+        #                        batch_first=True)
+        self.encoder = AutoModel.from_pretrained("princeton-nlp/sup-simcse-bert-base-uncased")
+
+        # disable the gradient of encoder
+        # for param in self.encoder.parameters():
+            # param.requires_grad = False
+
+        self.hidden2mean_logv = nn.Sequential(
+                # nn.Linear(hidden_size * self.hidden_factor, hidden_size * self.hidden_factor),
+                # nn.ReLU(),
+		        nn.Linear(hidden_size * self.hidden_factor, 2* latent_size)
+            )
+       
+
+    def forward(self, input_sequence, attention_mask):
+        
+        batch_size = input_sequence.size(0)
+
+        # ENCODER
+        hidden = self.encoder(input_ids=input_sequence, attention_mask=attention_mask, output_hidden_states=False, return_dict=True).pooler_output
+        # print(hidden.shape)
+        # if self.bidirectional or self.num_layers > 1:
+        #     # flatten hidden state
+        #     if self.rnn_type == 'lstm':
+        #         hidden = hidden[0].view(batch_size, self.hidden_size*self.hidden_factor)
+        #     else:
+        #         hidden = hidden.view(batch_size, self.hidden_size*self.hidden_factor)
+        # else:
+        #     if self.rnn_type == 'lstm':
+        #         hidden = hidden[0].squeeze()
+        #     else:
+        #         hidden = hidden.squeeze()
+
+        # REPARAMETERIZATION
+        mean, logv = torch.chunk(self.hidden2mean_logv(hidden), 2, dim=-1)
+        std = torch.exp(0.5 * logv)
+
+        z = to_var(torch.randn([batch_size, self.latent_size]))
+        z = z * std + mean
+        # print(z.shape)
+        return mean, logv, z
+
+
 
 class VAEDecoder(nn.Module):
     def __init__(self, vocab_size, embedding_size, rnn_type, hidden_size, word_dropout, embedding_dropout, latent_size,
-                sos_idx, eos_idx, pad_idx, unk_idx, max_sequence_length, embedding, num_layers=1, bidirectional=False, tensor_device=None):
+                sos_idx, eos_idx, pad_idx, unk_idx, max_sequence_length, embedding, num_layers=1, bidirectional=False):
 
         super().__init__()
-        # self.tensor = tensor if tensor else (torch.cuda.FloatTensor if torch.cuda.is_available() else torch.Tensor)
+        self.tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.Tensor
 
         self.max_sequence_length = max_sequence_length
         self.sos_idx = sos_idx
@@ -115,7 +188,7 @@ class VAEDecoder(nn.Module):
                 # input_embedding = self.embedding(input_sequence)
             input_sequence = input_sequence.unsqueeze(1)
             # print(3, input_sequence.shape)
-            input_embedding = self.embedding(input_sequence)
+            input_embedding = self.embedding(input_sequence.to('cuda:0')).to('cuda:1')
 
             # print(4, input_embedding.shape)
             # print(5, hidden.shape)
@@ -140,6 +213,7 @@ class VAEDecoder(nn.Module):
         #     generations, z, padded_outputs = self.inference(z=z)
         
         # else:
+        input_sequence = input_sequence[sorted_idx]
         hidden = self.latent2hidden(z)
     
         if self.num_layers > 1:
@@ -155,7 +229,6 @@ class VAEDecoder(nn.Module):
                 hidden = hidden.unsqueeze(0)
         # decoder input
         if self.word_dropout_rate > 0:
-            input_sequence = input_sequence[sorted_idx]
             # randomly replace decoder input with <unk>
             prob = torch.rand(input_sequence.size())
             if torch.cuda.is_available():
@@ -163,7 +236,9 @@ class VAEDecoder(nn.Module):
             prob[(input_sequence.data - self.sos_idx) * (input_sequence.data - self.pad_idx) == 0] = 1
             decoder_input_sequence = input_sequence.clone()
             decoder_input_sequence[prob < self.word_dropout_rate] = self.unk_idx
-            input_embedding = self.embedding(decoder_input_sequence)
+            input_embedding = self.embedding(decoder_input_sequence.to(self.embedding.weight.device)).to('cuda:1')
+        else:
+            input_embedding = self.embedding(input_sequence).to('cuda:1')
         # input_embedding = self.embedding_dropout(self.embedding(input_sequence))
         packed_input = rnn_utils.pack_padded_sequence(input_embedding, sorted_lengths.data.tolist(), batch_first=True)
 
@@ -322,100 +397,3 @@ class VAEDecoder(nn.Module):
 
         return save_to
     
-
-class VAEEncoder(nn.Module):
-    def __init__(self, vocab_size, embedding_size, rnn_type, hidden_size, word_dropout, embedding_dropout, latent_size,
-                sos_idx, eos_idx, pad_idx, unk_idx, max_sequence_length, embedding, num_layers=1, bidirectional=False, tensor_device=None):
-
-        super().__init__()
-        # self.tensor = tensor if tensor else (torch.cuda.FloatTensor if torch.cuda.is_available() else torch.Tensor)
-        self.tensor_device = tensor_device if tensor_device else torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-        self.max_sequence_length = max_sequence_length
-        self.sos_idx = sos_idx
-        self.eos_idx = eos_idx
-        self.pad_idx = pad_idx
-        self.unk_idx = unk_idx
-
-        self.latent_size = latent_size
-
-        self.rnn_type = rnn_type
-        self.bidirectional = bidirectional
-        self.num_layers = num_layers
-        self.hidden_size = hidden_size
-        
-        # self.bert = BertModel.from_pretrained('bert-base-uncased')
-        # self.bert.eval()
-        # embedding_size = self.bert.config.hidden_size
-        # self.bert.requires_grad = False
-        self.embedding = embedding
-        self.word_dropout_rate = word_dropout
-        self.embedding_dropout = nn.Dropout(p=embedding_dropout)
-
-        self.hidden_factor = (2 if bidirectional else 1) * num_layers
-        self.decoder_hidden_factor = num_layers
-        
-        if rnn_type == 'rnn':
-            rnn = nn.RNN
-        elif rnn_type == 'gru':
-            rnn = nn.GRU
-        elif rnn_type == 'lstm':
-            rnn = nn.LSTM
-            self.latent2c = nn.Sequential(
-                nn.Linear(latent_size, latent_size),
-                nn.ReLU(),
-		        nn.Linear(latent_size, hidden_size * self.decoder_hidden_factor),
-            )
-        else:
-            raise ValueError()
-
-        self.encoder_rnn = rnn(embedding_size, hidden_size, num_layers=num_layers, bidirectional=self.bidirectional,
-                               batch_first=True)
-
-
-        self.hidden2mean_logv = nn.Sequential(
-                nn.Linear(hidden_size * self.hidden_factor, hidden_size * self.hidden_factor),
-                nn.ReLU(),
-		        nn.Linear(hidden_size * self.hidden_factor, 2* latent_size)
-            )
-       
-
-    def forward(self, input_sequence, length):
-        
-        batch_size = input_sequence.size(0)
-        sorted_lengths, sorted_idx = torch.sort(length, descending=True)
-        input_sequence = input_sequence[sorted_idx]
-
-
-        # ENCODER
-
-        # use bert to get the embeddings
-        # input_embedding = self.embedding_dropout(self.embedding(input_sequence, attention_mask=input_sequence != self.pad_idx)[0])
-        input_embedding = self.embedding_dropout(self.embedding(input_sequence))
-
-        packed_input = rnn_utils.pack_padded_sequence(input_embedding, sorted_lengths.data.tolist(), batch_first=True)
-
-        _, hidden = self.encoder_rnn(packed_input)
-
-        if self.bidirectional or self.num_layers > 1:
-            # flatten hidden state
-            if self.rnn_type == 'lstm':
-                hidden = hidden[0].view(batch_size, self.hidden_size*self.hidden_factor)
-            else:
-                hidden = hidden.view(batch_size, self.hidden_size*self.hidden_factor)
-        else:
-            if self.rnn_type == 'lstm':
-                hidden = hidden[0].squeeze()
-            else:
-                hidden = hidden.squeeze()
-
-        # REPARAMETERIZATION
-        mean, logv = torch.chunk(self.hidden2mean_logv(hidden), 2, dim=-1)
-        std = torch.exp(0.5 * logv)
-
-        z = torch.randn([batch_size, self.latent_size], device=self.tensor_device)
-        z = z * std + mean
-        _, reversed_idx = torch.sort(sorted_idx)
-
-        return sorted_idx, mean, logv, z, reversed_idx, sorted_lengths
-

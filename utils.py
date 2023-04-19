@@ -66,3 +66,60 @@ def expierment_name(args, ts):
     exp_name += "TS=%s" % ts
 
     return exp_name
+
+def partial_experiment_name(args, ts):
+    exp_name = str()
+    try:
+        exp_name += "BS=%i_" % args.batch_size
+    except AttributeError:
+        pass
+    try:
+        exp_name += "LR={}_".format(args.learning_rate)
+    except AttributeError:
+        pass
+    try:
+        exp_name += "EB=%i_" % args.embedding_size
+    except AttributeError:
+        pass
+    try:
+        exp_name += "%s_" % args.rnn_type.upper()
+    except AttributeError:
+        pass
+    try:
+        exp_name += "HS=%i_" % args.hidden_size
+    except AttributeError:
+        pass
+    try:
+        exp_name += "L=%i_" % args.num_layers
+    except AttributeError:
+        pass
+    try:
+        exp_name += "BI=%i_" % args.bidirectional
+    except AttributeError:
+        pass
+    try:
+        exp_name += "LS=%i_" % args.latent_size
+    except AttributeError:
+        pass
+    try:
+        exp_name += "WD={}_".format(args.word_dropout)
+    except AttributeError:
+        pass
+    try:
+        exp_name += "ANN=%s_" % args.anneal_function.upper()
+    except AttributeError:
+        pass
+    try:
+        exp_name += "K={}_".format(args.k)
+    except AttributeError:
+        pass
+    try:
+        exp_name += "X0=%i_" % args.x0
+    except AttributeError:
+        pass
+    try:
+        exp_name += "TS=%s" % ts
+    except AttributeError:
+        pass
+    
+    return exp_name
